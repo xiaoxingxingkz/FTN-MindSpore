@@ -110,26 +110,38 @@ step_size_val = dataset_train.get_dataset_size()
 """
 构建网络
 """
+from CNNplusTransformer_model_reg import DenseNet21plusTransformer_reg
 from CNNplusTransformer_model import DenseNet21plusTransformer
-
 
 """
 这个函数主要是用来处理预训练模型的 就是如果有预训练模型参数需要在训练之前输入 就把pretrained设为True 此处由于没有预训练模型提供 因此后面在训练的时候设置的是False
 
 """
 from mindspore import load_checkpoint, load_param_into_net
-def _model(pretrained: bool = False):
+def _model(pretrained: bool = True):
     # num_classes = 2
-    model = DenseNet21plusTransformer(2)
+    model2 = DenseNet21plusTransformer(2)
     #存储路径
-    model_ckpt = "./LoadPretrainedModel/0227.ckpt"
+    model_ckpt = "./BestCheckpoint/best.ckpt"
 
     if pretrained:
-        # download(url=model_url, path=model_ckpt)
         param_dict = load_checkpoint(model_ckpt)
         load_param_into_net(model, param_dict)
 
-    return model
+    return model2
+
+
+def _model_reg(pretrained: bool = False):
+    # num_classes = 2
+    model1 = DenseNet21plusTransformer_reg(2)
+    #存储路径
+    model_ckpt = "./BestCheckpoint/best.ckpt"
+
+    if pretrained:
+        param_dict = load_checkpoint(model_ckpt)
+        load_param_into_net(model, param_dict)
+
+    return model1
 
 
 """
@@ -149,40 +161,46 @@ import mindspore as ms
 # os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 # 定义网络，此处不采用预训练，即将pretrained设置为False
-MindSpore_Model = _model(pretrained=False)
+MindSpore_Model1 = _model_reg(pretrained=True)
+MindSpore_Model2 = _model(pretrained=True)
 
 #param.requires_grad = True表示所有参数都需要求梯度进行更新。
-for param in MindSpore_Model.get_parameters():
+for param in MindSpore_Model1.get_parameters():
     param.requires_grad = True
 
+for param in MindSpore_Model2.get_parameters():
+    param.requires_grad = False
+
 # 设置训练的轮数和学习率 #*****************************************************************************************
-num_epochs = 60    
+num_epochs = 120    
 #基于余弦衰减函数计算学习率。学习率最小值为0.0001，最大值为0.0005，具体API见文档https://www.mindspore.cn/docs/zh-CN/master/api_python/nn/mindspore.nn.cosine_decay_lr.html?highlight=cosine_decay_lr
 lr = nn.cosine_decay_lr(min_lr=0.0001, max_lr=0.0005, total_step=step_size_train * num_epochs,
                         step_per_epoch=step_size_train, decay_epoch=num_epochs)
 # 定义优化器和损失函数
 #Adam优化器，具体可参考论文https://arxiv.org/abs/1412.6980
-opt = nn.Adam(params=MindSpore_Model.trainable_params(), learning_rate=lr)
+opt = nn.Adam(params=MindSpore_Model1.trainable_params(), learning_rate=lr)
 
 # 交叉熵损失
 loss_fn = nn.CrossEntropyLoss()
+loss_mse = nn.MSELoss()
 
 #前向传播，计算loss
 def forward_fn(inputs, targets):
-    logits = MindSpore_Model(inputs)
-    loss = loss_fn(logits, targets)
+    logits = MindSpore_Model1(inputs)
+    loss = loss_mse(logits, targets)
     return loss
 
 #计算梯度和loss
 grad_fn = ops.value_and_grad(forward_fn, None, opt.parameters)
 
 def train_step(inputs, targets):
+    targets = MindSpore_Model2(inputs)
     loss, grads = grad_fn(inputs, targets)
     opt(grads)
     return loss
 
 # 实例化模型
-model = ms.Model(MindSpore_Model, loss_fn, opt, metrics={"Accuracy": nn.Accuracy()})
+model = ms.Model(MindSpore_Model1, loss_fn, opt, metrics={"Accuracy": nn.Accuracy()})
 
 
 # 创建迭代器
@@ -202,16 +220,17 @@ print("Start Training Loop ...")
 
 for epoch in range(num_epochs):
     losses = []
-    MindSpore_Model.set_train()
+    MindSpore_Model1.set_train()
 
     # 为每轮训练读入数据
     for i, data in enumerate(dataset_train):
         images = data[0]
         labels = data[1]
-        # labels = Tensor(labels, ms.int32)
 
-        output = MindSpore_Model(images)
-        loss = train_step(images, labels)
+
+        output = MindSpore_Model1(images)
+        targets = MindSpore_Model2(images)
+        loss = train_step(images, targets)
         if i%30 == 0 or i == step_size_train -1:
             print('Epoch: [%3d/%3d], Steps: [%3d/%3d], Train Loss: [%5.3f]'%(epoch+1, num_epochs, i+1, step_size_train, loss))
         losses.append(loss)
@@ -234,71 +253,10 @@ for epoch in range(num_epochs):
         if os.path.exists(best_ckpt_path):
             os.chmod(best_ckpt_path, stat.S_IWRITE)#取消文件的只读属性，不然删不了
             os.remove(best_ckpt_path)
-        ms.save_checkpoint(MindSpore_Model, best_ckpt_path)
+        ms.save_checkpoint(MindSpore_Model1, best_ckpt_path)
 
 print("=" * 80)
 print(f"End of validation the best Accuracy is: {best_acc: 5.3f}, "
       f"save the best ckpt file in {best_ckpt_path}", flush=True)
 print("=" * 80)
-
-
-
-
-###############################################################################################################
-###############################################################################################################
-###############################################################################################################
-###############################################################################################################
-###############################################################################################################
-###############################################################################################################
-###############################################################################################################
-###############################################################################################################
-###############################################################################################################
-# """
-# 验证和评估效果并且将效果可视化
-# """
-# import matplotlib.pyplot as plt
-
-# def visualize_model(best_ckpt_path, dataset_val):
-#     net = _model(pretrained=False)
-#     # 加载模型参数
-#     param_dict = ms.load_checkpoint(best_ckpt_path)
-#     ms.load_param_into_net(net, param_dict)
-#     model = ms.Model(net)
-#     # 加载验证集的数据进行验证
-#     data = next(dataset_val.create_dict_iterator())
-#     images = data["image"].asnumpy()
-#     labels = data["label"].asnumpy()
-#     # 预测图像类别
-#     output = model.predict(ms.Tensor(data['image']))
-#     pred = np.argmax(output.asnumpy(), axis=1)
-
-#     # 图像分类
-#     classes = []
-
-#     with open(data_dir+"/batches.meta.txt", "r") as f:
-#         for line in f:
-#             line = line.rstrip()
-#             if line != '':
-#                 classes.append(line)
-
-#     # 显示图像及图像的预测值
-#     plt.figure()
-#     for i in range(6):
-#         plt.subplot(2, 3, i+1)
-#         # 若预测正确，显示为蓝色；若预测错误，显示为红色
-#         color = 'blue' if pred[i] == labels[i] else 'red'
-#         plt.title('predict:{}'.format(classes[pred[i]]), color=color)
-#         picture_show = np.transpose(images[i], (1, 2, 0))
-#         mean = np.array([0.4914, 0.4822, 0.4465])
-#         std = np.array([0.2023, 0.1994, 0.2010])
-#         picture_show = std * picture_show + mean
-#         picture_show = np.clip(picture_show, 0, 1)
-#         plt.imshow(picture_show)
-#         plt.axis('off')
-
-#     plt.show()
-
-# # 使用测试数据集进行验证
-# visualize_model(best_ckpt_path=best_ckpt_path, dataset_val=dataset_val)
-
 
